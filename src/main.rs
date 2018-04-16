@@ -50,20 +50,47 @@ fn main() {
                     .allow_hyphen_values(true)
                     .required(true)
                     .help("the repository name(s) to clone"))
-                .arg(Arg::with_name("dir")
-                    .short("d")
-                    .long("dir")
-                    .required(true)
-                    .takes_value(true)
-                    .help("the directory to clone the submodules into"))
         )
         .get_matches();
 
+    if let Some(_) = matches.subcommand_matches("init") {
+        let default_cfg = cfg::Cfg {
+            lib_target: "ReplicatedStorage".to_owned(),
+            lib_dir: "lib".to_owned()
+        };
+
+        let serialized = serde_json::to_string(&default_cfg).unwrap();
+        let mut file = match File::create(&Path::new("rodep.json")) {
+            Ok(file) => file,
+            Err(why) => panic!("couldn't create file rodep.json: {}", why),
+        };
+
+        match file.write_all(serialized.as_bytes()) {
+            Err(why) => panic!("couldn't write to rodep.json: {}", why),
+            _ => println!("created rodep.json configuration file"),
+        };
+
+        return;
+    }
+
+    // Load configuration file now
+    // The only subcommand that can act without a configuration is init, which
+    // creates a cfg file. Once it's done, we can load it.
+    let config_path_str = matches.value_of("config").unwrap();
+    let config_path = Path::new(config_path_str);
+    
+    let config: cfg::Cfg = {
+        let mut file = File::open(&config_path).expect("could not open config file");
+
+        let mut file_contents = String::new();
+        file.read_to_string(&mut file_contents).expect("could not read config file");
+        
+        serde_json::from_str(&file_contents).unwrap()
+    };
 
     if let Some(matches) = matches.subcommand_matches("add") {
         let cwd = std::env::current_dir().unwrap();
         let repository = Repository::discover(cwd.as_path()).expect("couldn't find repository");
-        let lib_dir = matches.value_of("dir").expect("no dir");
 
         if let Some(names) = matches.values_of("name") {
             for name in names {
@@ -71,7 +98,7 @@ fn main() {
                     let mut path = PathBuf::new();
                     {
                         let clone_name = cloned_name(&repo_url);
-                        path.push(lib_dir);
+                        path.push(&config.lib_dir);
                         path.push(clone_name);
                     }
 
@@ -98,22 +125,5 @@ fn main() {
                 }
             }
         }
-    }
-    else if let Some(_) = matches.subcommand_matches("init") {
-        let default_cfg = cfg::Cfg {
-            lib_target: "ReplicatedStorage".to_owned(),
-            lib_dir: "lib".to_owned()
-        };
-
-        let serialized = serde_json::to_string(&default_cfg).unwrap();
-        let mut file = match File::create(&Path::new("rodep.json")) {
-            Ok(file) => file,
-            Err(why) => panic!("couldn't create file rodep.json: {}", why),
-        };
-
-        match file.write_all(serialized.as_bytes()) {
-            Err(why) => panic!("couldn't write to rodep.json: {}", why),
-            _ => println!("created rodep.json configuration file"),
-        };
     }
 }
