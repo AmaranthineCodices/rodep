@@ -10,7 +10,17 @@ use url::Url;
 #[macro_use]
 extern crate lazy_static;
 
-use std::path::PathBuf;
+#[macro_use]
+extern crate serde_derive;
+
+extern crate serde;
+extern crate serde_json;
+
+mod cfg;
+
+use std::path::{PathBuf, Path};
+use std::io::prelude::*;
+use std::fs::File;
 
 fn cloned_name(url: &Url) -> &str {
     url.path_segments().expect("no path segments").last().expect("no last value")
@@ -25,6 +35,14 @@ fn main() {
         .version("0.1.0")
         .author("AmaranthineCodices")
         .about("Super simple dependency adder")
+        .arg(Arg::with_name("config")
+            .short("c")
+            .long("cfg")
+            .takes_value(true)
+            .default_value("rodep.json")
+            .help("the rodep configuration file. Use rodep init to generate a new one."))
+        .subcommand(SubCommand::with_name("init")
+            .about("Creates a starter configuration file in this directory."))
         .subcommand(SubCommand::with_name("add")
                 .about("Adds dependencies.")
                 .arg(Arg::with_name("name")
@@ -80,5 +98,22 @@ fn main() {
                 }
             }
         }
+    }
+    else if let Some(_) = matches.subcommand_matches("init") {
+        let default_cfg = cfg::Cfg {
+            lib_target: "ReplicatedStorage".to_owned(),
+            lib_dir: "lib".to_owned()
+        };
+
+        let serialized = serde_json::to_string(&default_cfg).unwrap();
+        let mut file = match File::create(&Path::new("rodep.json")) {
+            Ok(file) => file,
+            Err(why) => panic!("couldn't create file rodep.json: {}", why),
+        };
+
+        match file.write_all(serialized.as_bytes()) {
+            Err(why) => panic!("couldn't write to rodep.json: {}", why),
+            _ => println!("created rodep.json configuration file"),
+        };
     }
 }
