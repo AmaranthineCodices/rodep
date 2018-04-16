@@ -16,11 +16,15 @@ extern crate serde_derive;
 extern crate serde;
 extern crate serde_json;
 
-mod cfg;
+mod config;
+use config::Config;
 
 use std::path::{PathBuf, Path};
 use std::io::prelude::*;
 use std::fs::File;
+use std::collections::HashMap;
+
+use serde_json::Value;
 
 fn cloned_name(url: &Url) -> &str {
     url.path_segments().expect("no path segments").last().expect("no last value")
@@ -28,6 +32,27 @@ fn cloned_name(url: &Url) -> &str {
 
 lazy_static! {
     static ref GH_BASE_URL: Url = Url::parse("https://github.com/").unwrap();
+}
+
+fn add_submodule_to_rojo(cfg: &Config, submodule_name: &str) -> Result<(), std::io::Error> {
+    let mut file = File::open(cfg.rojo_path)?;
+
+    let mut file_contents = String::new();
+    file.read_to_string(&mut file_contents)?;
+    
+    let mut json_tree: Value = serde_json::from_str(&file_contents).expect("can't parse json");
+    let mut partition_map = serde_json::Map::new();
+    // TODO: Use Path to join
+    partition_map.insert("src".to_owned(), Value::String(format!("{}/{}", cfg.lib_dir, submodule_name)));
+    partition_map.insert("target".to_owned(), Value::String(format!("{}.{}", cfg.lib_target, submodule_name)));
+    json_tree["partitions"][format!("__rodep_auto_{}", submodule_name)] = Value::Object(partition_map);
+
+    let altered_rojo_cfg = serde_json::to_string_pretty(&json_tree).unwrap();
+
+    let mut file = File::create(cfg.rojo_path)?;
+    file.write_all(altered_rojo_cfg.as_bytes())?;
+
+    Ok(())
 }
 
 fn main() {
@@ -54,9 +79,10 @@ fn main() {
         .get_matches();
 
     if let Some(_) = matches.subcommand_matches("init") {
-        let default_cfg = cfg::Cfg {
-            lib_target: "ReplicatedStorage".to_owned(),
-            lib_dir: "lib".to_owned()
+        let default_cfg = Config {
+            lib_target: "ReplicatedStorage",
+            lib_dir: "lib",
+            rojo_path: "rojo.json",
         };
 
         let serialized = serde_json::to_string(&default_cfg).unwrap();
@@ -78,15 +104,11 @@ fn main() {
     // creates a cfg file. Once it's done, we can load it.
     let config_path_str = matches.value_of("config").unwrap();
     let config_path = Path::new(config_path_str);
-    
-    let config: cfg::Cfg = {
-        let mut file = File::open(&config_path).expect("could not open config file");
+    let mut file = File::open(&config_path).expect("could not open config file");
 
-        let mut file_contents = String::new();
-        file.read_to_string(&mut file_contents).expect("could not read config file");
-        
-        serde_json::from_str(&file_contents).unwrap()
-    };
+    let mut file_contents = String::new();
+    file.read_to_string(&mut file_contents).expect("could not read config file");
+    let config: Config = serde_json::from_str(&file_contents).unwrap();
 
     if let Some(matches) = matches.subcommand_matches("add") {
         let cwd = std::env::current_dir().unwrap();
@@ -95,14 +117,14 @@ fn main() {
         if let Some(names) = matches.values_of("name") {
             for name in names {
                 if let Ok(repo_url) = GH_BASE_URL.join(name) {
+                    let clone_name = cloned_name(&repo_url);
+                    let repo_url_str = repo_url.as_str().to_owned();
+
                     let mut path = PathBuf::new();
                     {
-                        let clone_name = cloned_name(&repo_url);
                         path.push(&config.lib_dir);
                         path.push(clone_name);
                     }
-
-                    let repo_url_str = repo_url.as_str().to_owned();
 
                     let mut submodule = repository.submodule(&repo_url_str, path.as_path(), false).expect("couldn't create submodule");
 
@@ -119,6 +141,9 @@ fn main() {
                     submodule_repository.checkout_tree(&commit.as_object(), Some(&mut cb)).expect("couldn't checkout master");
                     submodule_repository.set_head("refs/heads/master").expect("couldn't set head");
                     submodule.add_finalize().expect("couldn't finalize submodule");
+
+                    add_submodule_to_rojo(&config, clone_name).expect("couldn't add submodule to rojo config");
+                    println!("added submodule {} in {}", clone_name, path.as_path().to_str().unwrap());
                 }
                 else {
                     println!("Invalid repository name {}", name);
