@@ -22,33 +22,45 @@ use config::Config;
 use std::path::{PathBuf, Path};
 use std::io::prelude::*;
 use std::fs::File;
-use std::collections::HashMap;
 
 use serde_json::Value;
-
-fn cloned_name(url: &Url) -> &str {
-    url.path_segments().expect("no path segments").last().expect("no last value")
-}
 
 lazy_static! {
     static ref GH_BASE_URL: Url = Url::parse("https://github.com/").unwrap();
 }
 
+fn cloned_name(url: &Url) -> &str {
+    url.path_segments().expect("no path segments").last().expect("no last value")
+}
+
+// FIXME: Result should also handle other errors, not just io::Error.
 fn add_submodule_to_rojo(cfg: &Config, submodule_name: &str) -> Result<(), std::io::Error> {
     let mut file = File::open(cfg.rojo_path)?;
 
     let mut file_contents = String::new();
     file.read_to_string(&mut file_contents)?;
     
+    // Manipulate the Rojo JSON file dynamically, without static typing
+    // This allows the configuration to be *mostly* independent of Rojo's
+    // configuration format.
     let mut json_tree: Value = serde_json::from_str(&file_contents).expect("can't parse json");
     let mut partition_map = serde_json::Map::new();
-    // TODO: Use Path to join
-    partition_map.insert("src".to_owned(), Value::String(format!("{}/{}", cfg.lib_dir, submodule_name)));
+
+    let mut src_path = PathBuf::new();
+    src_path.push(cfg.lib_dir);
+    src_path.push(submodule_name);
+    // TODO: Find src/lib path - this is complicated
+    let src_path_str = src_path.to_str().expect("can't convert path to string").to_owned();
+    partition_map.insert("src".to_owned(), Value::String(src_path_str));
     partition_map.insert("target".to_owned(), Value::String(format!("{}.{}", cfg.lib_target, submodule_name)));
+    // This partition key is potentially a problem
     json_tree["partitions"][format!("__rodep_auto_{}", submodule_name)] = Value::Object(partition_map);
 
+    // Pretty-print the Rojo configuration, as it'll be edited by users
     let altered_rojo_cfg = serde_json::to_string_pretty(&json_tree).unwrap();
 
+    // Does this leak file handles, since the file handle from reading is being
+    // masked, or is Rust smart enough to drop the old handle?
     let mut file = File::create(cfg.rojo_path)?;
     file.write_all(altered_rojo_cfg.as_bytes())?;
 
