@@ -83,13 +83,15 @@ fn main() {
         .subcommand(SubCommand::with_name("add")
                 .about("Adds dependencies.")
                 .arg(Arg::with_name("name")
-                    .multiple(true)
+                    // Allow hyphens in repository names - they happen!
                     .allow_hyphen_values(true)
                     .required(true)
-                    .help("the repository name(s) to clone"))
+                    .help("the repository name to clone"))
         )
         .get_matches();
 
+    // Match init first, so we can stop if that's the subcommand.
+    // All other commands require a configuration; init creates one.
     if let Some(_) = matches.subcommand_matches("init") {
         let default_cfg = Config {
             lib_target: "ReplicatedStorage",
@@ -97,23 +99,26 @@ fn main() {
             rojo_path: "rojo.json",
         };
 
+        // This should always serialize successfully.
         let serialized = serde_json::to_string(&default_cfg).unwrap();
-        let mut file = match File::create(&Path::new("rodep.json")) {
-            Ok(file) => file,
-            Err(why) => panic!("couldn't create file rodep.json: {}", why),
-        };
 
-        match file.write_all(serialized.as_bytes()) {
-            Err(why) => panic!("couldn't write to rodep.json: {}", why),
-            _ => println!("created rodep.json configuration file"),
-        };
+        // Use expect - if the error cannot be handled we're SOL; the user
+        // needs to intervene here
+        let mut file = File::create(&Path::new("rodep.jsons")).expect("couldn't create rodep.json");
+        file.write_all(serialized.as_bytes()).expect("couldn't write to rodep.json");
 
-        return;
+        // Tell the user we made a file! It's disconcerting if the command just
+        // runs with no output.
+        println!("created rodep.json configuration file");
+
+        // Halt execution, we're done!
+        return
     }
 
     // Load configuration file now
     // The only subcommand that can act without a configuration is init, which
     // creates a cfg file. Once it's done, we can load it.
+    // The config argument will always have a value, since a default is specified.
     let config_path_str = matches.value_of("config").unwrap();
     let config_path = Path::new(config_path_str);
     let mut file = File::open(&config_path).expect("could not open config file");
@@ -126,40 +131,50 @@ fn main() {
         let cwd = std::env::current_dir().unwrap();
         let repository = Repository::discover(cwd.as_path()).expect("couldn't find repository");
 
-        if let Some(names) = matches.values_of("name") {
-            for name in names {
-                if let Ok(repo_url) = GH_BASE_URL.join(name) {
-                    let clone_name = cloned_name(&repo_url);
-                    let repo_url_str = repo_url.as_str().to_owned();
+        if let Some(name) = matches.value_of("name") {
+            if let Ok(repo_url) = GH_BASE_URL.join(name) {
+                let clone_name = cloned_name(&repo_url);
+                let repo_url_str = repo_url.as_str().to_owned();
 
-                    let mut path = PathBuf::new();
-                    {
-                        path.push(&config.lib_dir);
-                        path.push(clone_name);
-                    }
+                let mut path = PathBuf::new();
+                path.push(&config.lib_dir);
+                path.push(clone_name);
 
-                    let mut submodule = repository.submodule(&repo_url_str, path.as_path(), false).expect("couldn't create submodule");
+                let mut submodule = repository.submodule(&repo_url_str, path.as_path(), false).expect("couldn't create submodule");
+                // Immediately open the submodule; we can't really do
+                // anything with the Submodule struct itself.
+                let submodule_repository = submodule.open().expect("couldn't open submodule repo");
 
-                    let submodule_repository = submodule.open().expect("couldn't open submodule repo");
-                    
-                    submodule_repository.find_remote("origin").unwrap().fetch(&["master"], None, None).expect("couldn't fetch master");
-                    let origin_master_obj = submodule_repository.revparse_single("origin/master").expect("couldn't find ref to origin/master");
-                    let commit = origin_master_obj.peel_to_commit().expect("couldn't get commit");
-                    submodule_repository.branch("master", &commit, true).expect("couldn't create local master branch");
+                // Find the origin and fetch the master branch from it.
+                // Since this is GitHub, we can assume it has a master
+                // branch; if not, we probably need to panic.
+                submodule_repository.find_remote("origin").unwrap().fetch(&["master"], None, None).expect("couldn't fetch master");
+                // Find the latest commit to master and peel it to the commit.
+                let origin_master_obj = submodule_repository.revparse_single("origin/master").expect("couldn't find ref to origin/master");
+                let commit = origin_master_obj.peel_to_commit().expect("couldn't get commit");
+                // Create a local branch based on the contents of the master.
+                submodule_repository.branch("master", &commit, true).expect("couldn't create local master branch");
 
-                    let mut cb = git2::build::CheckoutBuilder::new();
-                    cb.force();
-                    
-                    submodule_repository.checkout_tree(&commit.as_object(), Some(&mut cb)).expect("couldn't checkout master");
-                    submodule_repository.set_head("refs/heads/master").expect("couldn't set head");
-                    submodule.add_finalize().expect("couldn't finalize submodule");
+                let mut cb = git2::build::CheckoutBuilder::new();
+                // MUST checkout with force, otherwise the Git repository
+                // thinks we just deleted everything x.x
+                cb.force();
+                
+                // Check out files into the working directory. Everything
+                // up until this point has been prep-work.
+                submodule_repository.checkout_tree(&origin_master_obj, Some(&mut cb)).expect("couldn't checkout master");
+                // Set the repository HEAD to the local master branch.
+                submodule_repository.set_head("refs/heads/master").expect("couldn't set head");
+                // Finalize the submodule addition - adds it to .gitmodules
+                // and the like.
+                submodule.add_finalize().expect("couldn't finalize submodule");
 
-                    add_submodule_to_rojo(&config, clone_name).expect("couldn't add submodule to rojo config");
-                    println!("added submodule {} in {}", clone_name, path.as_path().to_str().unwrap());
-                }
-                else {
-                    println!("Invalid repository name {}", name);
-                }
+                // Add the submodule to the Rojo configuration!
+                add_submodule_to_rojo(&config, clone_name).expect("couldn't add submodule to rojo config");
+                println!("added submodule {} in {}", clone_name, path.as_path().to_str().unwrap());
+            }
+            else {
+                println!("Invalid repository name {}", name);
             }
         }
     }
