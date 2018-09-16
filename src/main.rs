@@ -34,7 +34,7 @@ fn cloned_name(url: &Url) -> &str {
 }
 
 // FIXME: Result should also handle other errors, not just io::Error.
-fn add_submodule_to_rojo(cfg: &Config, submodule_name: &str) -> Result<(), std::io::Error> {
+fn add_submodule_to_rojo(cfg: &Config, submodule_name: &str, submodule_src_dir: &Path, target_name: &str) -> Result<(), std::io::Error> {
     let mut file = File::open(cfg.rojo_path)?;
 
     let mut file_contents = String::new();
@@ -49,10 +49,11 @@ fn add_submodule_to_rojo(cfg: &Config, submodule_name: &str) -> Result<(), std::
     let mut src_path = PathBuf::new();
     src_path.push(cfg.lib_dir);
     src_path.push(submodule_name);
+    src_path.push(submodule_src_dir);
     // TODO: Find src/lib path - this is complicated
     let src_path_str = src_path.to_str().expect("can't convert path to string").to_owned();
     partition_map.insert("src".to_owned(), Value::String(src_path_str));
-    partition_map.insert("target".to_owned(), Value::String(format!("{}.{}", cfg.lib_target, submodule_name)));
+    partition_map.insert("target".to_owned(), Value::String(format!("{}.{}", cfg.lib_target, target_name)));
     // This partition key is potentially a problem
     json_tree["partitions"][format!("__rodep_auto_{}", submodule_name)] = Value::Object(partition_map);
 
@@ -65,6 +66,29 @@ fn add_submodule_to_rojo(cfg: &Config, submodule_name: &str) -> Result<(), std::
     file.write_all(altered_rojo_cfg.as_bytes())?;
 
     Ok(())
+}
+
+fn get_src_directory(repository_path: &Path) -> Result<PathBuf, ()> {
+    // Try in this order:
+    // src
+    // lib
+    // src will be present for some, and the lib folder will be used for
+    // storing that repository's submodules.
+    // in others, lib will be the source folder, and modules will be the
+    // submodules root.
+
+    let src_path = repository_path.join("src");
+    let lib_path = repository_path.join("lib");
+
+    if src_path.is_dir() {
+        Ok(src_path)
+    }
+    else if lib_path.is_dir() {
+        Ok(lib_path)
+    }
+    else {
+        Err(())
+    }
 }
 
 fn main() {
@@ -86,7 +110,21 @@ fn main() {
                     // Allow hyphens in repository names - they happen!
                     .allow_hyphen_values(true)
                     .required(true)
+                    .takes_value(true)
+                    .index(1)
                     .help("the repository name to clone"))
+                .arg(Arg::with_name("dir")
+                    .short("d")
+                    .long("dir")
+                    .takes_value(true)
+                    .help("the source directory of the repository. If unspecified, will use src or lib, whichever exists.")
+                )
+                .arg(Arg::with_name("target")
+                    .short("t")
+                    .long("target-name")
+                    .takes_value(true)
+                    .help("the name to use when synchronizing into Roblox Studio")
+                )
         )
         .get_matches();
 
@@ -104,7 +142,7 @@ fn main() {
 
         // Use expect - if the error cannot be handled we're SOL; the user
         // needs to intervene here
-        let mut file = File::create(&Path::new("rodep.jsons")).expect("couldn't create rodep.json");
+        let mut file = File::create(&Path::new("rodep.json")).expect("couldn't create rodep.json");
         file.write_all(serialized.as_bytes()).expect("couldn't write to rodep.json");
 
         // Tell the user we made a file! It's disconcerting if the command just
@@ -169,8 +207,13 @@ fn main() {
                 // and the like.
                 submodule.add_finalize().expect("couldn't finalize submodule");
 
+                let src_dir = get_src_directory(&path).unwrap_or_else(
+                    |_| PathBuf::from(matches.value_of("dir").expect("couldn't infer a source directory; please specify one with --dir")));
+
+                let sync_name = matches.value_of("target").unwrap_or(clone_name);
+
                 // Add the submodule to the Rojo configuration!
-                add_submodule_to_rojo(&config, clone_name).expect("couldn't add submodule to rojo config");
+                add_submodule_to_rojo(&config, clone_name, &src_dir, &sync_name).expect("couldn't add submodule to rojo config");
                 println!("added submodule {} in {}", clone_name, path.as_path().to_str().unwrap());
             }
             else {
