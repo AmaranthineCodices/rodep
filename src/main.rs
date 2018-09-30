@@ -52,7 +52,7 @@ fn add_submodule_to_rojo(cfg: &Config, submodule_name: &str, submodule_src_dir: 
     src_path.push(submodule_src_dir);
     // TODO: Find src/lib path - this is complicated
     let src_path_str = src_path.to_str().expect("can't convert path to string").to_owned();
-    partition_map.insert("src".to_owned(), Value::String(src_path_str));
+    partition_map.insert("path".to_owned(), Value::String(src_path_str));
     partition_map.insert("target".to_owned(), Value::String(format!("{}.{}", cfg.lib_target, target_name)));
     // This partition key is potentially a problem
     json_tree["partitions"][format!("__rodep_auto_{}", submodule_name)] = Value::Object(partition_map);
