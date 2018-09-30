@@ -3,7 +3,7 @@ An **extremely early** project for adding dependencies to Roblox projects that u
 
 What works right now:
 * Adding submodules from GitHub
+* Adding submodules to `rojo.json` automatically
 
 What will work later (I hope):
-* Adding submodules to `rojo.json` automatically
 * Updating submodules easily
