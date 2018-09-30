@@ -22,6 +22,7 @@ use config::Config;
 use std::path::{PathBuf, Path};
 use std::io::prelude::*;
 use std::fs::File;
+use std::process::Command;
 
 use serde_json::Value;
 
@@ -42,7 +43,7 @@ fn add_submodule_to_rojo(cfg: &Config, submodule_name: &str, submodule_src_dir: 
     
     // Manipulate the Rojo JSON file dynamically, without static typing
     // This allows the configuration to be *mostly* independent of Rojo's
-    // configuration format.
+    // configuration format except for what it specifically has to touch
     let mut json_tree: Value = serde_json::from_str(&file_contents).expect("can't parse json");
     let mut partition_map = serde_json::Map::new();
 
@@ -50,7 +51,6 @@ fn add_submodule_to_rojo(cfg: &Config, submodule_name: &str, submodule_src_dir: 
     src_path.push(cfg.lib_dir);
     src_path.push(submodule_name);
     src_path.push(submodule_src_dir);
-    // TODO: Find src/lib path - this is complicated
     let src_path_str = src_path.to_str().expect("can't convert path to string").to_owned();
     partition_map.insert("path".to_owned(), Value::String(src_path_str));
     partition_map.insert("target".to_owned(), Value::String(format!("{}.{}", cfg.lib_target, target_name)));
@@ -60,8 +60,6 @@ fn add_submodule_to_rojo(cfg: &Config, submodule_name: &str, submodule_src_dir: 
     // Pretty-print the Rojo configuration, as it'll be edited by users
     let altered_rojo_cfg = serde_json::to_string_pretty(&json_tree).unwrap();
 
-    // Does this leak file handles, since the file handle from reading is being
-    // masked, or is Rust smart enough to drop the old handle?
     let mut file = File::create(cfg.rojo_path)?;
     file.write_all(altered_rojo_cfg.as_bytes())?;
 
@@ -103,7 +101,13 @@ fn main() {
             .default_value("rodep.json")
             .help("the rodep configuration file. Use rodep init to generate a new one."))
         .subcommand(SubCommand::with_name("init")
-            .about("Creates a starter configuration file in this directory."))
+            .about("Creates a starter configuration file in this directory.")
+            .arg(Arg::with_name("depdir")
+                .short("d")
+                .long("dir")
+                .default_value("lib")
+                .takes_value(true)
+                .help("the folder to place modules into")))
         .subcommand(SubCommand::with_name("add")
                 .about("Adds a dependency.")
                 .arg(Arg::with_name("name")
@@ -128,13 +132,17 @@ fn main() {
         )
         .get_matches();
 
+    let cwd = std::env::current_dir().unwrap();
+
     // Match init first, so we can stop if that's the subcommand.
     // All other commands require a configuration; init creates one.
-    if let Some(_) = matches.subcommand_matches("init") {
+    if let Some(matches) = matches.subcommand_matches("init") {
+        // depdir has a default value specified, so unwrapping is safe.
+        let lib_dir = matches.value_of("depdir").unwrap();
         let default_cfg = Config {
             lib_target: "ReplicatedStorage",
-            lib_dir: "lib",
             rojo_path: "rojo.json",
+            lib_dir,
         };
 
         // This should always serialize successfully.
@@ -148,6 +156,37 @@ fn main() {
         // Tell the user we made a file! It's disconcerting if the command just
         // runs with no output.
         println!("created rodep.json configuration file");
+
+        if !Path::new("rojo.json").exists() {
+            // `rojo init` is the best way to generate an up-to-date Rojo configuration.
+            Command::new("rojo")
+                .args(&["init"])
+                .output()
+                .expect("could not run 'rojo init'");
+            
+            println!("created rojo.json configuration file");
+        }
+
+        let lib_dir_metadata = std::fs::metadata(&lib_dir);
+        match lib_dir_metadata {
+            Ok(md) => if md.is_file() {
+                println!("the path {} corresponds to a file, not a directory!", lib_dir);
+            },
+            Err(err) => match err.kind() {
+                std::io::ErrorKind::NotFound => {
+                    std::fs::create_dir(lib_dir).expect("couldn't create directory");
+                    println!("created library directory {}", lib_dir);
+                }
+                _ => panic!("error fetching path metadata: {:?}", err),
+            }
+        };
+        
+        if let Err(_) = Repository::open(&cwd) {
+            match Repository::init(&cwd) {
+                Ok(_) => println!("initialized Git repository"),
+                Err(err) => println!("unable to initialize Git repository: {:?}", err),
+            }
+        }
 
         // Halt execution, we're done!
         return
@@ -166,7 +205,6 @@ fn main() {
     let config: Config = serde_json::from_str(&file_contents).unwrap();
 
     if let Some(matches) = matches.subcommand_matches("add") {
-        let cwd = std::env::current_dir().unwrap();
         let repository = Repository::discover(cwd.as_path()).expect("couldn't find repository");
 
         if let Some(name) = matches.value_of("name") {
