@@ -105,7 +105,7 @@ fn main() {
         .subcommand(SubCommand::with_name("init")
             .about("Creates a starter configuration file in this directory."))
         .subcommand(SubCommand::with_name("add")
-                .about("Adds dependencies.")
+                .about("Adds a dependency.")
                 .arg(Arg::with_name("name")
                     // Allow hyphens in repository names - they happen!
                     .allow_hyphen_values(true)
